@@ -1,0 +1,156 @@
+# CMM: Stage 2 → Stage 3 (multi-runner orchestration)
+# Two ephemeral runners share a single MongoDB instance and common caches.
+# Each runner gets its own config + work volumes to prevent state corruption.
+
+x-runner-common: &runner-common
+  build:
+    context: .
+  image: bill-tracker-runner:latest
+  restart: unless-stopped
+  depends_on:
+    mongo:
+      condition: service_healthy
+
+  # RISK ACCEPTED: SYS_TIME broadens container escape surface.
+  # Required for chrony clock sync — no mitigation available that
+  # preserves clock correction. Accept as-is for local runner.
+  # ESCALATE BEFORE: replicating this runner pattern to shared or
+  # cloud environments.
+  cap_add:
+    - SYS_TIME
+
+  # TCP keepalive — WSL2 default is 7200s; dead connections go undetected for 2h.
+  # 60/10/6 = detect dead connection within ~60s + 6 probes × 10s = ~2 min max.
+  sysctls:
+    net.ipv4.tcp_keepalive_time: 60
+    net.ipv4.tcp_keepalive_intvl: 10
+    net.ipv4.tcp_keepalive_probes: 6
+
+  group_add:
+    - "${DOCKER_GID:-1001}"
+
+  mem_limit: 5g
+  memswap_limit: 5g
+  cpus: ${RUNNER_CPUS:-3.0}
+
+  healthcheck:
+    test: ["CMD", "/deep-healthcheck.sh"]
+    interval: 30s
+    timeout: 15s
+    start_period: 120s
+    retries: 3
+
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+
+  # ── Shared MongoDB ──────────────────────────────────────────────────────────
+  mongo:
+    image: mongo:7.0
+    container_name: ci-mongo
+    restart: unless-stopped
+    command: ["mongod", "--bind_ip_all", "--quiet"]
+    volumes:
+      - mongo-data:/data/db
+    mem_limit: 2g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  # ── Runner 1 ────────────────────────────────────────────────────────────────
+  runner-1:
+    <<: *runner-common
+    container_name: ci-runner-1
+    environment:
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_NAME: ci-runner-1
+      REPO_OWNER: ${REPO_OWNER:?required}
+      REPO_NAME: ${REPO_NAME:?required}
+      DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-}
+      DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN:-}
+      SESSION_CONFLICT_WAIT: ${SESSION_CONFLICT_WAIT:-30}
+      WATCHDOG_MAX_FIRES: ${WATCHDOG_MAX_FIRES:-5}
+      EXTERNAL_MONGODB: "true"
+      MONGODB_URI: mongodb://mongo:27017
+    volumes:
+      # RISK ACCEPTED: Docker socket grants effective root on the host.
+      # Acceptable for single-user local runner executing only trusted code.
+      # ESCALATE BEFORE: running untrusted PRs (forks, Dependabot with
+      # custom scripts, external contributors) — replace with
+      # tecnativa/docker-socket-proxy whitelisting only required API calls.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-1-config:/home/garci/actions-runner
+      - runner-1-work:/home/garci/actions-runner/_work
+      - playwright-cache:/home/garci/.cache/ms-playwright
+      - pnpm-store:/home/garci/.local/share/pnpm/store
+
+  # ── Runner 2 ────────────────────────────────────────────────────────────────
+  runner-2:
+    <<: *runner-common
+    container_name: ci-runner-2
+    environment:
+      GITHUB_PAT: ${GITHUB_PAT}
+      RUNNER_NAME: ci-runner-2
+      REPO_OWNER: ${REPO_OWNER:?required}
+      REPO_NAME: ${REPO_NAME:?required}
+      DOCKERHUB_USERNAME: ${DOCKERHUB_USERNAME:-}
+      DOCKERHUB_TOKEN: ${DOCKERHUB_TOKEN:-}
+      SESSION_CONFLICT_WAIT: ${SESSION_CONFLICT_WAIT:-30}
+      WATCHDOG_MAX_FIRES: ${WATCHDOG_MAX_FIRES:-5}
+      EXTERNAL_MONGODB: "true"
+      MONGODB_URI: mongodb://mongo:27017
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runner-2-config:/home/garci/actions-runner
+      - runner-2-work:/home/garci/actions-runner/_work
+      - playwright-cache:/home/garci/.cache/ms-playwright
+      - pnpm-store:/home/garci/.local/share/pnpm/store
+
+  # ── Autoheal — restarts unhealthy containers automatically ──────────────────
+  autoheal:
+    image: willfarrell/autoheal@sha256:5c714bcf53e70c24329060b85477623cc2a0b05a065095c04785e0afb179c8be
+    container_name: autoheal
+    restart: always
+    init: true
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: all
+      AUTOHEAL_INTERVAL: 30
+      AUTOHEAL_START_PERIOD: 120
+      CURL_TIMEOUT: 30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # ── Disk watcher — prunes Docker artifacts before disk fills ────────────────
+  disk-watcher:
+    image: docker:27-cli
+    container_name: disk-watcher
+    restart: always
+    init: true
+    environment:
+      PRUNE_THRESHOLD_GB: ${PRUNE_THRESHOLD_GB:-10}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./disk-watch.sh:/disk-watch.sh:ro
+    entrypoint: ["sh", "/disk-watch.sh"]
+
+volumes:
+  runner-1-config:
+  runner-1-work:
+  runner-2-config:
+  runner-2-work:
+  playwright-cache:
+  pnpm-store:
+  mongo-data:

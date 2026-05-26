@@ -1,0 +1,4 @@
+actions-runner.tar.gz
+.env
+.env.*
+!.env.example
