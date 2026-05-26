@@ -21,15 +21,24 @@ The `entrypoint.sh` starts `chronyd` and runs the initial `chronyc makestep` **a
 
 Every sync attempt after boot failed silently (logged a warning but took no corrective action). The initial boot sync was the only one that ever worked. Once WSL2 accumulated enough drift (typically after host sleep/wake), TLS broke and the runner couldn't reach GitHub.
 
-### Fix
-- Added `bindcmdaddress 127.0.0.1` and `cmdallow 127/8` to `chrony.conf` so `chronyd` accepts commands from any local user over the loopback interface
-- Updated `background-loops.sh` to use `chronyc -h 127.0.0.1` to connect via the network command socket instead of the Unix socket
-- Explicitly passed `-f /etc/chrony/chrony.conf` to `chronyd` startup
+### Root cause (three layers deep)
+
+1. **`minpoll`/`maxpoll` as global directives crashed chronyd.** Chrony 4.2 treats these as per-source options. Having them standalone caused a parse error, preventing `chronyd` from starting at all. The `ntpdate` fallback masked the failure at boot — a one-shot sync succeeded but left no daemon running.
+
+2. **`makestep` is a privileged command.** Even after fixing the config and getting `chronyd` to start, `chronyc makestep` requires root. `cmdallow` only authorizes connections, not write operations. The non-root background loop could never force a clock step.
+
+3. **The background loop was unnecessary.** `chronyd` with `makestep 1.0 -1` in its config auto-steps whenever drift exceeds 1 second. The loop only needed to *monitor* drift (via read-only `chronyc tracking`), not *correct* it.
+
+### Fix (three commits)
+1. Moved `minpoll 4 maxpoll 8` onto the `pool` directives so chronyd parses the config successfully
+2. Added `bindcmdaddress 127.0.0.1` and `cmdallow 127/8` so non-root users can connect to chronyd
+3. Replaced `chronyc makestep` (privileged write) with `chronyc tracking` (read-only monitoring) — chronyd handles correction automatically
 
 ### Lessons
-1. **Silent failures are worse than crashes.** The loop logged a warning but never escalated — it should have counted consecutive failures and reported unhealthy after a threshold.
-2. **Privilege boundaries need testing.** The clock sync was tested manually as root during development but never verified post-gosu. A simple `whoami` in the loop would have caught this immediately.
-3. **The watchdog masked the root cause.** The watchdog restarted the runner process, which re-registered successfully (using the still-valid boot clock sync), hiding the fact that the ongoing sync was broken. Recovery looked healthy but the underlying condition was never fixed.
+1. **Silent failures are worse than crashes.** The loop logged a warning but never escalated. `chronyd` failing to start was masked by the `ntpdate` fallback. Two separate silent failures compounded.
+2. **Privilege boundaries need testing.** The clock sync was tested manually as root during development but never verified post-gosu.
+3. **The watchdog masked the root cause.** The watchdog restarted the runner process, which re-registered successfully (using the still-valid boot clock sync), hiding the fact that the ongoing sync was broken.
+4. **Understand what the daemon already does.** `chronyd` with `makestep 1.0 -1` auto-corrects drift. The background loop was trying to do what the daemon already handles — the loop's job was monitoring, not correction.
 
 ---
 
