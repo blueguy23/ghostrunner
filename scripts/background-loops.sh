@@ -6,10 +6,10 @@
 _clock_sync_loop() {
   while true; do
     sleep 60
-    if ! chronyc makestep 1.0 3 >/dev/null 2>&1; then
-      echo "[CLOCK] WARNING: chronyc makestep failed — drift may be accumulating"
+    if ! chronyc -h 127.0.0.1 makestep 1.0 3 >/dev/null 2>&1; then
+      echo "[CLOCK] WARNING: chronyc -h 127.0.0.1 makestep failed — drift may be accumulating"
     else
-      OFFSET=$(chronyc tracking 2>/dev/null | grep "System time" | awk '{print $4}')
+      OFFSET=$(chronyc -h 127.0.0.1 tracking 2>/dev/null | grep "System time" | awk '{print $4}')
       if [ -n "$OFFSET" ]; then
         OFFSET_ABS=$(echo "$OFFSET" | tr -d '-')
         if awk "BEGIN {exit !($OFFSET_ABS > 2.0)}"; then

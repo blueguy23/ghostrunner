@@ -9,7 +9,7 @@ if [ "$(id -u)" = "0" ]; then
   # Start chronyd as a daemon so chronyc can be used for periodic re-sync.
   # WSL2 desyncs after host sleep — fix before gosu so TLS ops don't fail.
   echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] Syncing clock..."
-  chronyd 2>/dev/null || \
+  chronyd -f /etc/chrony/chrony.conf 2>/dev/null || \
     ntpdate -u pool.ntp.org 2>/dev/null || \
     echo "[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] WARNING: Could not sync clock — TLS errors may follow"
   chronyc makestep 1.0 3 >/dev/null 2>&1 || true
