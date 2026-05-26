@@ -2,22 +2,27 @@
 # Intended to be sourced from entrypoint.sh — not executed directly
 [[ "${BASH_SOURCE[0]}" == "${0}" ]] && echo "ERROR: source this script, don't execute it" && exit 1
 
-# ── Clock re-sync loop (compensates for WSL2 drift mid-job) ───────────────────
+# ── Clock monitor loop (chronyd handles correction via makestep 1.0 -1) ──────
+# chronyd auto-steps the clock when drift > 1s. This loop only monitors
+# drift and alerts if chronyd has died or drift exceeds safe thresholds.
 _clock_sync_loop() {
   while true; do
     sleep 60
-    if ! chronyc -h 127.0.0.1 makestep 1.0 3 >/dev/null 2>&1; then
-      echo "[CLOCK] WARNING: chronyc -h 127.0.0.1 makestep failed — drift may be accumulating"
+    TRACKING=$(chronyc -h 127.0.0.1 tracking 2>&1)
+    if [ $? -ne 0 ]; then
+      echo "[CLOCK] WARNING: chronyd unreachable — daemon may have died"
+      continue
+    fi
+    OFFSET=$(echo "$TRACKING" | grep "System time" | awk '{print $4}')
+    if [ -z "$OFFSET" ]; then
+      echo "[CLOCK] WARNING: could not parse offset from chronyd"
+      continue
+    fi
+    OFFSET_ABS=$(echo "$OFFSET" | tr -d '-')
+    if awk "BEGIN {exit !($OFFSET_ABS > 2.0)}"; then
+      echo "[CLOCK] WARNING: large drift detected — ${OFFSET}s offset"
     else
-      OFFSET=$(chronyc -h 127.0.0.1 tracking 2>/dev/null | grep "System time" | awk '{print $4}')
-      if [ -n "$OFFSET" ]; then
-        OFFSET_ABS=$(echo "$OFFSET" | tr -d '-')
-        if awk "BEGIN {exit !($OFFSET_ABS > 2.0)}"; then
-          echo "[CLOCK] WARNING: large drift detected — ${OFFSET}s offset after sync"
-        else
-          echo "[CLOCK] sync OK — offset ${OFFSET}s"
-        fi
-      fi
+      echo "[CLOCK] sync OK — offset ${OFFSET}s"
     fi
   done
 }
