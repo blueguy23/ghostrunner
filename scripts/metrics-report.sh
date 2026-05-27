@@ -42,7 +42,7 @@ for ctr in "${CONTAINERS[@]}"; do
     continue
   }
 
-  IFS='|' read -r STATUS RESTARTS STARTED_AT MEM_LIMIT <<< "$INFO"
+  IFS='|' read -r STATUS RESTARTS STARTED_AT _ <<< "$INFO"
 
   if [ "$STATUS" = "running" ]; then
     STATUS_FMT=$(green "$STATUS")
@@ -171,7 +171,6 @@ echo ""
 
 RUN_IDS=$(echo "$RUNS_JSON" | jq -r '.workflow_runs[:20] | .[].id')
 
-declare -A RUNNER_JOBS 2>/dev/null || true
 RUNNER_COUNTS=""
 
 for RUN_ID in $RUN_IDS; do
