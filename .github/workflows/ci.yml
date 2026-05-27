@@ -19,8 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Run registration test harness
-        run: bash scripts/test-registration.sh
+      - name: Install bats-core
+        run: |
+          git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+          /tmp/bats-core/install.sh "$HOME/.local"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run bats test suite
+        run: bats tests/
 
       - name: Validate entrypoint syntax
         run: bash -n entrypoint.sh
